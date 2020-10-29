@@ -1,22 +1,81 @@
 import Rhino.Geometry as rg
+import rhinoscriptsyntax as rs
 import math as m
 import simple_comm as c
 import simple_ur_script as ur
 
 
 class Fabrication():
+    ROBOT_IP = "192.168.10.10"
 
-    def __init__(self, fabricate=False, brick_planes=None):
+    def __init__(self, fabricate=False, brick_planes=None, robot_ip=ROBOT_IP):
         self.brick_planes = brick_planes
+        self.robot_ip = robot_ip
+        self.accel = 0.1
+        self.vel = 0.1
         self.script = ""
+        self.way_planes = []
 
     def tcp(self):
         self.script += ur.set_tcp_by_angles(
-            0.0, 0.0, 0.0, m.radians(0.0), m.radians(180.0), m.radians(0))
+            0.0, 0.0, 74.0, m.radians(0.0), m.radians(180.0), m.radians(0))
 
-        return self.script
+    def set_robot_base_plane(self):
 
-    def pickup_station(self):
+        rs.MessageBox(
+            "move robot to base plane origin, press OK when there", 0)
+        data = c.listen_to_robot(ROBOT_IP)
+        pose = data['pose']
+        pt_1 = rg.Point3d(pose[0]*1000, pose[1]*1000, pose[2]*1000)
+        print(pt_1)
+        rs.MessageBox(
+            "move robot to base plane positive x direction, press OK when there", 0)
+        data = c.listen_to_robot(ROBOT_IP)
+        pose = data['pose']
+        pt_2 = rg.Point3d(pose[0]*1000, pose[1]*1000, pose[2]*1000)
+        print(pt_2)
+        rs.MessageBox(
+            "move robot to base plane positive y direction, press OK when there", 0)
+        data = c.listen_to_robot(robot_ip)
+        pose = data['pose']
+        pt_3 = rg.Point3d(pose[0]*1000, pose[1]*1000, pose[2]*1000)
+        print(pt_3)
+
+        robot_base = rg.Plane(pt_1, pt_2-pt_1, pt_3-pt_1)
+        text_file = open("robot_base.txt", "w")
+        text_file.write(str(robot_base.Origin)+"," +
+                        str(robot_base.XAxis)+","+str(robot_base.YAxis))
+        text_file.close()
+
+    def load_robot_base_plane(self):
+        text_file = open("robot_base.txt", "r")
+        string = text_file.read()
+        values = string.split(",")
+        values = [float(value) for value in values]
+
+        base_origin = rg.Point3d(values[0], values[1], values[2])
+        base_x_axis = rg.Vector3d(values[3], values[4], values[5])
+        base_y_axis = rg.Vector3d(values[6], values[7], values[8])
+
+        base_plane = rg.Plane(base_origin, base_x_axis, base_y_axis)
+        return base_plane
+
+    def set_robot_base_plane_from_pts(self):
+
+        pt_0 = rg.Point3d(327, 230, 0)  # base plane origin
+        pt_1 = rg.Point3d(499, 230, 0)  # point on base plane positive x direction
+        pt_2 = rg.Point3d(499, 499, 0)  # point on base plane positive xy
+
+        robot_base = rg.Plane(pt_0, pt_1-pt_0, pt_2-pt_0)
+        return robot_base
+
+    def rhino_to_robot_space(self, in_plane):
+        plane = in_plane.Clone()
+        _r_matrix = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, self.set_robot_base_plane_from_pts())
+        plane.Transform(_r_matrix)
+        return plane
+
+    def pickup_brick(self, pick_up_plane):
         """Example of a method's documentation.
 
         Parameters
@@ -27,32 +86,88 @@ class Fabrication():
         Description of the second param
         """
 
+        safe_distance = 50
 
+        safe_plane = pick_up_plane.Clone()
+        safe_plane.Translate(rg.Vector3d(0, 0, safe_distance))
+
+
+        self.script += ur.move_l(safe_plane, self.accel, self.vel)
+        self.way_planes.append(safe_plane)
+
+        self.script += ur.move_l(pick_up_plane, self.accel, self.vel)
+        self.way_planes.append(pick_up_plane)
+
+        self.script += ur.set_digital_out(4, True)
+        self.script += ur.sleep(1)
+
+        self.script += ur.move_l(safe_plane, self.accel, self.vel)
+        self.way_planes.append(safe_plane)
 
         return None
 
-    def place(self):
+    def place_brick(self, plane):
         """
-        this funktion gereates the robotic sequience for placing a brick
+        this function gereates the robotic sequience for placing a brick
         Requires a plane wich describes the possition of the brick"""
 
+        safe_distance = 50
+
+        safe_plane = plane.Clone()
+        safe_plane.Translate(rg.Vector3d(0, 0, safe_distance))
+
+        self.script += ur.move_l(safe_plane, self.accel, self.vel)
+        self.way_planes.append(safe_plane)
+
+        self.script += ur.move_l(plane, self.accel, self.vel)
+        self.way_planes.append(plane)
+
+        self.script += ur.set_digital_out(4, False)
+        self.script += ur.sleep(1)
+
+        self.script += ur.move_l(safe_plane, self.accel, self.vel)
+        self.way_planes.append(safe_plane)
+
         return None
 
-    def sequience(self):
-        a = 90
+    def procedure(self):
+
+        self.tcp()
+        robot_planes = []
+
+        pick_up_plane = rg.Plane(rg.Point3d(0, 450, 0), rg.Vector3d.XAxis, rg.Vector3d.YAxis)
+        #pick_up_plane = self.rhino_to_robot_space(pick_up_plane)
+
+        for plane in (self.brick_planes):
+            robot_planes.append(self.rhino_to_robot_space(plane))
+
+        for plane in (robot_planes):
+
+            self.pickup_brick(pick_up_plane)
+            self.place_brick(plane)
+
 
     def visualize(self):
-        """ this funktion visualizes the planes wich are sent to the robot"""
-        return None
+        """this funktion visualizes the planes wich are sent to the robot"""
+
+        crv = []
+
+        for plane in self.way_planes:
+            #print (plane.Origin)
+            pt = plane.Origin
+            crv.append(pt)
+
+        curve = rg.NurbsCurve.Create(False, 1, crv)
+
+        return self.way_planes, curve
 
     def send(self):
         """
         this funktion sends the script to the robot."""
 
-        for object in self.wall:
-            test =89
-
-        return test
+        self.script = c.concatenate_script(self.script)
+        c.send_script(self.script, self.robot_ip)
+        return self.script
 
 
 class Brick(object):
@@ -60,7 +175,7 @@ class Brick(object):
     REFERENCE_WIDTH = 12
     REFERENCE_HEIGHT = 8
 
-    def __init__(self, plane, length=25, width=12, height=8):
+    def __init__(self, plane, length=REFERENCE_LENGTH, width=REFERENCE_WIDTH, height=REFERENCE_HEIGHT):
         """Brick containes picking plane, placing plane and geometry
 
         Parameters
@@ -100,7 +215,7 @@ class Brick(object):
         pt3 : top point at possitive X and poossitive Y]
 
         """
-
+        """
         pt_0 = rg.Point3d(0, 0, 0)
         pt_1 = rg.Point3d(0, self.width, 0)
         pt_2 = rg.Point3d(self.length, 0, 0)
@@ -110,6 +225,19 @@ class Brick(object):
         pt_5 = rg.Point3d(0, self.width, self.height)
         pt_6 = rg.Point3d(self.length, 0, self.height)
         pt_7 = rg.Point3d(self.length, self.width, self.height)
+
+        b_pts = [pt_0, pt_1, pt_2, pt_3, pt_4, pt_5, pt_6, pt_7]
+        """
+
+        pt_0 = rg.Point3d(0, 0, 0)
+        pt_1 = rg.Point3d(self.length, 0, 0)
+        pt_2 = rg.Point3d(self.length, self.width, 0)
+        pt_3 = rg.Point3d(0, self.width, 0)
+
+        pt_4 = rg.Point3d(0, 0, self.height)
+        pt_5 = rg.Point3d(self.length, 0, self.height)
+        pt_6 = rg.Point3d(self.length, self.width, self.height)
+        pt_7 = rg.Point3d(0, self.width, self.height)
 
         b_pts = [pt_0, pt_1, pt_2, pt_3, pt_4, pt_5, pt_6, pt_7]
 
@@ -123,7 +251,7 @@ class Brick(object):
         [Rhino Geometry Plane]
 
         """
-        vec = (self.pts()[3]-self.pts()[0])/2
+        vec = (self.pts()[2]-self.pts()[0])/2
         origin = self.pts()[0] + vec
         plane = rg.Plane(origin, rg.Vector3d.XAxis, rg.Vector3d.YAxis)
         return plane
@@ -173,11 +301,11 @@ class Brick(object):
         Returns
         ----------
         [srf0 : base surface,
-        srf1 : short edge,
+        srf1 : long edge,
         srf2 : top surface
-        srf3 : short edge,
-        srf4 : long edge
-        srf5 : long edge]
+        srf3 : long edge,
+        srf4 : short edge
+        srf5 : short edge]
 
         """
         tran_brick_pts = []
@@ -189,19 +317,32 @@ class Brick(object):
         pt_0, pt_1, pt_2, pt_3, pt_4, pt_5, pt_6, pt_7 = tran_brick_pts
 
         srf_0 = rg.NurbsSurface.CreateFromPoints(
-            [pt_0, pt_1, pt_2, pt_3], 2, 2, 1, 1)
+            [pt_0, pt_1, pt_3, pt_2], 2, 2, 1, 1)
         srf_1 = rg.NurbsSurface.CreateFromPoints(
-            [pt_0, pt_1, pt_4, pt_5], 2, 2, 1, 1)
+           [pt_0, pt_1, pt_4, pt_5], 2, 2, 1, 1)
         srf_2 = rg.NurbsSurface.CreateFromPoints(
-            [pt_4, pt_5, pt_6, pt_7], 2, 2, 1, 1)
+            [pt_4, pt_5, pt_7, pt_6], 2, 2, 1, 1)
         srf_3 = rg.NurbsSurface.CreateFromPoints(
             [pt_6, pt_7, pt_2, pt_3], 2, 2, 1, 1)
         srf_4 = rg.NurbsSurface.CreateFromPoints(
-            [pt_1, pt_3, pt_5, pt_7], 2, 2, 1, 1)
+            [pt_0, pt_3, pt_4, pt_7], 2, 2, 1, 1)
         srf_5 = rg.NurbsSurface.CreateFromPoints(
-            [pt_0, pt_2, pt_4, pt_6], 2, 2, 1, 1)
+            [pt_1, pt_2, pt_5, pt_6], 2, 2, 1, 1)
 
         return (srf_0, srf_1, srf_2, srf_3, srf_4, srf_5)
+
+    def mesh(self):
+        """Mesh  depicting the brick:
+
+        Returns
+        ----------
+        mesh_brick : Mesh
+        """
+
+        mesh_brick = rg.Mesh.CreateFromBox(self.pts(), 3, 3, 3)
+        mesh_brick.Transform(self.transformation())
+
+        return mesh_brick
 
 
 class Wall():
@@ -236,17 +377,17 @@ class Wall():
         """
 
         brick_planes = []
-        for i in range(self.x_cnt):
-            for j in range(self.z_cnt):
+        for i in range(self.z_cnt):       #layer count
+            for j in range(self.x_cnt):   #layer length
 
-                if j % 2 == 0:
-                    x_pos = i * (self.b_length + 3)
+                if i % 2 == 0:
+                    x_pos = j * (self.b_length+1)
                     rotation = m.radians(10)
                 else:
-                    x_pos = i * (self.b_length + 3) + self.b_length/2
+                    x_pos = j * (self.b_length+1) + (self.b_length/2)-1
                     rotation = m.radians(-10)
 
-                z_pos = j * (self.b_height)
+                z_pos = i * (self.b_height)
 
                 origin = rg.Point3d(x_pos, 0, z_pos)
                 plane = rg.Plane(origin, rg.Vector3d.XAxis, rg.Vector3d.YAxis)
@@ -270,8 +411,9 @@ class Wall():
         for plane in self.brick_possitions():
             myBrick = Brick(plane)
             planes.append(myBrick.base_plane())
+            #geo.extend(myBrick.surface())
 
-            geo.extend(myBrick.surface())
+            geo.append(myBrick.mesh())
 
         return geo
 
@@ -281,8 +423,13 @@ class Wall():
 
         Returns script
         ----------
-        scritpt : "UR script"
+        script : "UR script"
         """
 
-        myFabrication = Fabrication()
-        return myFabrication.tcp()
+        myFabrication = Fabrication(brick_planes=self.brick_possitions())
+
+        myFabrication.procedure()
+        script = myFabrication.send()
+
+
+        return script, myFabrication.visualize()

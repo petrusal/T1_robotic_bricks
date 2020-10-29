@@ -10,6 +10,7 @@ import Rhino.Geometry as rg
 MAX_ACCEL = 1.5
 MAX_VELOCITY = 2
 
+
 def move_l(plane_to, accel, vel):
     """
     Function that returns UR script for linear movement in tool-space.
@@ -118,7 +119,6 @@ def set_tcp_by_plane(x_offset, y_offset, z_offset, ref_plane=rg.Plane.WorldXY):
 
 def set_tcp_by_angles(x_offset, y_offset, z_offset, x_rotate, y_rotate, z_rotate):
     """
-    TODO(Jason): Need to test this
     Function that returns UR script for setting tool center point
 
     Args:
